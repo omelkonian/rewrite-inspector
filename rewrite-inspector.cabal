@@ -1,0 +1,71 @@
+name: rewrite-inspector
+version: 0.1.0.1
+cabal-version: >=1.10
+build-type: Simple
+license: BSD3
+license-file: LICENSE
+maintainer: Orestis Melkonian <melkon.or@gmail.com>
+stability: experimental
+homepage: http://github.com/omelkonian/rewrite-inspector/
+bug-reports: http://github.com/omelkonian/rewrite-inspector/issues
+category: rewriting, inspection, terminal, user interface
+synopsis: Inspection of rewriting steps
+description:
+    A terminal UI for inspecting steps taken by a rewriting process.
+    Useful for the optimization phase of a compiler,
+    or even evaluators of small languages.
+author: Orestis Melkonian
+extra-source-files:
+    README.md
+    LICENSE
+
+source-repository head
+    type: git
+    location: git://github.com/omelkonian/rewrite-inspector.git
+
+library
+    hs-source-dirs:   src
+    exposed-modules:  Gen
+                      Types
+                      Pretty
+                      BrickUI
+    build-depends:    base          >= 4.7  && < 5,
+                      binary        >= 0.8.5    && < 0.11,
+                      containers    >= 0.5.0.0  && < 0.7,
+                      brick         >= 0.40,
+                      vty           >= 5.23.1,
+                      prettyprinter >= 1.2.0.1  && < 2.0,
+                      text,
+                      microlens     >= 0.3.0.0,
+                      microlens-th,
+                      data-default  >= 0.7.1.1
+
+    ghc-options:      -Wall
+    default-language: Haskell2010
+    default-extensions: ScopedTypeVariables
+                        ViewPatterns
+                        LambdaCase
+                        MultiParamTypeClasses
+                        FunctionalDependencies
+                        ConstraintKinds
+                        TypeApplications
+                        AllowAmbiguousTypes
+                        TypeSynonymInstances
+                        TypeOperators
+                        DeriveGeneric
+                        DeriveAnyClass
+                        DefaultSignatures
+                        TypeFamilies
+                        FlexibleContexts
+                        StandaloneDeriving
+
+executable expr-example
+    hs-source-dirs:   app
+    main-is:          Main.hs
+    build-depends:    base >=4.7 && <5,
+                      rewrite-inspector -any,
+                      prettyprinter >= 1.2.0.1  && < 2.0
+
+    ghc-options:      -threaded
+    extra-libraries:  pthread
+    default-language: Haskell2010
