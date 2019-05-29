@@ -17,10 +17,7 @@ repository head.hackage
              8f79fd2389ab2967354407ec852cbe73f2e8635793ac446d09461ffb99527f6e
   key-threshold: 3
 
--- index state, to go along with the cabal.project.freeze file. update the index
--- state by running `cabal update` twice and looking at the index state it
--- displays to you (as the second update will be a no-op)
-index-state: 2019-02-18T09:58:03Z
+index-state: 2019-05-29T14:50:52Z
 
 -- Build documentation for all dependencies so we can upload docs to hackage
 -- with proper links
