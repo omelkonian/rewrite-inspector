@@ -49,6 +49,11 @@ showCode scroll w opts searchString ctx0 =
   . ppr' @term opts
 
 -- Convert a stream into our simpler data type.
+data MyDoc = MChar Char
+           | MString String
+           | MLine Int
+           | MMod [String] MyDoc
+
 data Item = Stx | Ctx
 
 myForm :: forall term. Diff term
@@ -61,7 +66,7 @@ myForm ctx0 ctx' stack attrs = \case
   SText _ s rest  -> mark (MString (unpack s)) : continueWith rest
   SLine i rest    -> MLine i                   : continueWith rest
   SAnnPush a rest -> case handleAnn @term a of
-    Left  s -> myForm @term ctx0 ctx' (Stx:stack) (s:attrs) rest
+    Left  s -> myForm @term ctx0 ctx' (Stx:stack) (show s:attrs) rest
     Right c -> myForm @term ctx0 (ctx' ++ [c]) (Ctx:stack) attrs rest
   SAnnPop rest -> case top of
     Stx -> myForm @term ctx0 ctx' stack' (tail attrs) rest
@@ -69,11 +74,6 @@ myForm ctx0 ctx' stack attrs = \case
     where (top:stack') = stack
   where continueWith = myForm @term ctx0 ctx' stack attrs
         mark = MMod $ ["focus" | ctx0 `isPrefixOf` ctx'] ++ attrs
-
-data MyDoc = MChar Char
-           | MString String
-           | MLine Int
-           | MMod [String] MyDoc
 
 -- Split into individual lines (of some indendation).
 split :: [MyDoc] -> [(Int, [MyDoc])]
@@ -106,6 +106,12 @@ defaultTheme userStyles = Bt.newTheme V.defAttr $
   , (E.editFocusedAttr,       V.black `B.on` V.yellow)
   , (Bf.invalidFormInputAttr, V.white `B.on` V.red)
   , (Bf.focusedFormInputAttr, V.black `B.on` V.yellow)
+    -- syntax highlighting
+  , ("type",      V.defAttr `V.withForeColor` V.brightYellow)
+  , ("keyword",   V.defAttr `V.withForeColor` V.rgbColor 255 165 0)
+  , ("literal",   V.defAttr `V.withForeColor` V.brightCyan)
+  , ("unique",    V.defAttr `V.withStyle` V.dim)
+  , ("qualifier", V.defAttr `V.withStyle` V.italic)
   ] ++ map (\(s, a) -> (B.attrName s, a)) userStyles
 
 modify :: Bool -> [String] -> Widget n -> Widget n

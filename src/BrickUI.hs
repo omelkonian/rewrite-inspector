@@ -32,7 +32,7 @@ import Pretty
 -- | Entry point.
 runTerminal :: forall term. Diff term => FilePath -> IO ()
 runTerminal ftheme = do
-  res <- loadCustomizations ftheme (defaultTheme $ annStyles @term)
+  res <- loadCustomizations ftheme (defaultTheme $ userStyles @term)
   case res of
     Left err ->
       error $ "[theme.ini] Configuration file is malformed: " ++ err

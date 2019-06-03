@@ -18,7 +18,27 @@ import Lens.Micro.TH (makeLenses)
 
 import qualified Graphics.Vty as V
 
--------------------------------
+--------------------------------------------------
+-- Syntactic annotations used for highlighting.
+
+data Syntax
+  = Type           -- ^ type information
+  | Keyword        -- ^ standard keywords of the language
+  | Literal        -- ^ literal values (e.g. strings, numbers)
+  | Unique         -- ^ unique identifiers
+  | Qualifier      -- ^ qualifiers for modules
+  | Custom String  -- ^ used for user-supplied styling
+
+instance Show Syntax where
+  show = \case
+    Type      -> "type"
+    Keyword   -> "keyword"
+    Literal   -> "literal"
+    Unique    -> "unique"
+    Qualifier -> "qualifier"
+    Custom s  -> s
+
+--------------------------------------------------
 -- Generic interface.
 
 class Eq (Ctx term) => Diff term where
@@ -38,13 +58,13 @@ class Eq (Ctx term) => Diff term where
   topEntity :: String
   topEntity = "top"
 
-  handleAnn :: Ann term -> Either String (Ctx term)
+  handleAnn :: Ann term -> Either Syntax (Ctx term)
 
-  default handleAnn :: Ann term ~ Ctx term => Ann term -> Either String (Ctx term)
+  default handleAnn :: Ann term ~ Ctx term => Ann term -> Either Syntax (Ctx term)
   handleAnn = Right
 
-  annStyles :: [(String, V.Attr)]
-  annStyles = []
+  userStyles :: [(String, V.Attr)]
+  userStyles = []
 
   initOptions :: Options term
 
@@ -61,8 +81,7 @@ class Eq (Ctx term) => Diff term where
 
   patch :: term -> [Ctx term] -> term -> term
 
-
---------------------------------
+--------------------------------------------------
 -- History datatype.
 
 type History term ctx = [HStep term ctx]
