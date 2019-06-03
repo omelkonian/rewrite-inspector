@@ -1,5 +1,5 @@
 name: rewrite-inspector
-version: 0.1.0.3
+version: 0.1.0.4
 cabal-version: >=1.10
 build-type: Simple
 license: BSD3
@@ -25,7 +25,8 @@ source-repository head
 
 library
     hs-source-dirs:   src
-    exposed-modules:  Gen
+    exposed-modules:  RewriteInspector
+                      Gen
                       Types
                       Pretty
                       BrickUI

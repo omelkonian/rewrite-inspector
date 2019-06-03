@@ -96,7 +96,7 @@ render scroll searchString (i, xs) = B.padLeft (B.Pad i) $ hBox $ render1 <$> xs
 -- UI Styling.
 
 defaultTheme :: [(String, V.Attr)] -> Bt.Theme
-defaultTheme userStyles = Bt.newTheme V.defAttr $
+defaultTheme extraAttrs = Bt.newTheme V.defAttr $
   [ ("focus",      B.bg $ V.rgbColor 47 79 79)
   , ("title",      V.defAttr `V.withStyle` V.bold)
   , ("emph",       V.defAttr `V.withStyle` V.bold)
@@ -112,7 +112,7 @@ defaultTheme userStyles = Bt.newTheme V.defAttr $
   , ("literal",   V.defAttr `V.withForeColor` V.brightCyan)
   , ("unique",    V.defAttr `V.withStyle` V.dim)
   , ("qualifier", V.defAttr `V.withStyle` V.italic)
-  ] ++ map (\(s, a) -> (B.attrName s, a)) userStyles
+  ] ++ map (\(s, a) -> (B.attrName s, a)) extraAttrs
 
 modify :: Bool -> [String] -> Widget n -> Widget n
 modify scroll = foldr (.) id . fmap mod1 . sortOn (\case "Type" -> 1; _ -> 0)
