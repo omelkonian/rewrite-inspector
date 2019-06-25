@@ -24,36 +24,44 @@ import Brick.Forms ((@@=), checkboxField, editField, formState, newForm, Form)
 
 import Gen
 
+-- * Basic types.
+
+-- | Program binders (i.e. top-level identifiers) are identified by their name.
 type Binder = String
 
+-- | Our @Brick@ TUI does not use any custom events.
 data NoCustomEvent
 
+-- | The type of resource names, used throughout the TUI.
 data Name
   = LeftViewport | RightViewport
   -- ^ viewports
   | FormField String
   -- ^ form fields
-  | SearchResult
-      Name {- viewport name -}
-      Int  {- occurrence -}
+  | SearchResult Int
   -- ^ search results with numbered occurrences
   | Other
   deriving (Eq, Ord, Show)
 
+-- | Type of cursors in our TUI.
 type Cursor = CursorLocation Name
 
-data Trans
+-- | Commands that the user can issue through the input form.
+data Command
   = Step Int
   -- ^ move to given step in the current binder
-  | Name String
+  | Trans String
   -- ^ move to the next/previous transformation with the given name
   | Search String
   -- ^ move to the next/previous occurrence of the searched string
   deriving (Eq, Ord, Show)
 
+-- | Options kept and changed throught the TUI's input form.
 data OptionsUI term = OptionsUI
-  { _opts  :: Options term
-  , _trans :: Trans
+  { _opts :: Options term
+  -- ^ options for the pretty-printer
+  , _com  :: Command
+  -- ^ command to issue (search string, etc...)
   }
 makeLenses ''OptionsUI
 
@@ -68,8 +76,11 @@ data VizState term = VizState
   , _curStep   :: Int
   -- ^ current step in given top-level entity
   , _curOccur  :: Int
-  , _leftN     :: Int -- # of occurrences in the left viewport
-  , _rightN    :: Int -- # of occurrences in the right viewport
+  -- ^ current occurrence we are highlighting
+  , _leftN     :: Int
+  -- ^ # of occurrences in the left viewport
+  , _rightN    :: Int
+  -- ^ # of occurrences in the right viewport
   }
 makeLenses ''VizState
 
@@ -94,6 +105,9 @@ data VizStates term = VizStates
   }
 makeLenses ''VizStates
 
+-- * Getters and setters.
+
+-- | Create the input form.
 mkForm :: forall term. Diff term
        => OptionsUI term
        -> Form (OptionsUI term) NoCustomEvent Name
@@ -102,19 +116,19 @@ mkForm = newForm $
       (flagFields @term)
   ++
   [ (str "move to " <+>) @@=
-      editField trans -- lens
-                (FormField "Trans") -- resource name
+      editField com -- lens
+                (FormField "Command") -- resource name
                 (Just 1) -- line limit
                 (pack . concat . tail . words . show) -- display
-                (readTrans . unpack . head) -- validate
+                (readCom . unpack . head) -- validate
                 (txt . head) -- render
                 id -- rendering augmentation
   ]
   where
-    readTrans x | Just n <- readMaybe x :: Maybe Int = Just $ Step n
-                | '%':'s':' ':s <- x                 = Just $ Search s
-                | '%':'t':' ':s <- x                 = Just $ Name s
-                | otherwise                          = Nothing
+    readCom x | Just n <- readMaybe x :: Maybe Int = Just $ Step n
+              | '%':'s':' ':s <- x                 = Just $ Search s
+              | '%':'t':' ':s <- x                 = Just $ Trans s
+              | otherwise                          = Nothing
 
 -- | Group the rewrite history by the different top-level binders.
 createVizStates :: forall term. Diff term
@@ -127,8 +141,8 @@ createVizStates hist = VizStates
                 $ map (\h -> (head h ^. bndrS, initialState h))
                 $ groupBy (\ x y -> x^.bndrS == y^.bndrS)
                 $ sortOn _bndrS hist
-  , _form       = mkForm @term (OptionsUI { _opts  = initOptions @term
-                                          , _trans = Step 1 })
+  , _form       = mkForm @term (OptionsUI { _opts = initOptions @term
+                                          , _com  = Step 1 })
   , _showBot    = False
   , _width      = 0
   , _height     = 0
@@ -137,9 +151,8 @@ createVizStates hist = VizStates
   where bndrs = _bndrS <$> hist
         top   = fromJust $ find (topEntity @term `isInfixOf`) bndrs
 
-initialState :: Diff term
-             => History term (Ctx term)
-             -> VizState term
+-- | State initialization for the bottom layer.
+initialState :: Diff term => History term (Ctx term) -> VizState term
 initialState hist = VizState { _steps      = hist
                              , _prevState  = Nothing
                              , _curExpr    = initialExpr hist
@@ -148,12 +161,14 @@ initialState hist = VizState { _steps      = hist
                              , _leftN      = 0
                              , _rightN     = 0 }
 
+-- | Get the name of the current transformation.
 currentStepName :: VizState term -> String
 currentStepName v =
   case v^.steps of
     []     -> "THE END"
     (st:_) -> st^.name
 
+-- | Get information about the current step.
 getStep :: VizStates term
         -> Binder
         -> (Int {-current-}, Int {-total-}, String {-transformation-})
@@ -161,23 +176,34 @@ getStep vs bndr = (cur, cur + length (v^.steps), currentStepName v)
   where v   = (vs^.states) ! bndr
         cur = v^.curStep
 
+-- | Get the current state of the bottom layer.
 getCurrentState :: VizStates term -> VizState term
 getCurrentState vs = (vs^.states) ! (vs^.curBinder)
 
+-- | Get the current string we are searching for.
+-- NB: Returns the empty string of no search command has been issued.
 getSearchString :: Diff term => VizStates term -> String
-getSearchString vs = case vs^.formData.trans of { Search s -> s; _ -> "" }
+getSearchString vs = case vs^.formData.com of { Search s -> s; _ -> "" }
 
+-- | Lens from the /global/ state to the input form's data.
 formData :: forall term
           . Diff term
          => Lens' (VizStates term) (OptionsUI term)
 formData f vs = (\fm' -> vs {_form = mkForm @term fm'}) <$> f (formState $ _form vs)
 
+-- | Update the /local/ state of the current binder.
 updateState :: VizStates term -> VizState term -> VizStates term
 updateState vs v = vs & states .~ insert (vs^.curBinder) v (vs^.states)
 
+-- | Get the available code width for one of the two code panes.
 getCodeWidth :: VizStates term -> Int
 getCodeWidth vs = vs^.width `div` 2
 
+-- | Cycle through top-level binders in the /global/ state.
+--
+--   [@stepBinder@] Proceed forward.
+--
+--   [@unstepBinder@] Proceed backward.
 stepBinder, unstepBinder :: VizStates term -> VizStates term
 stepBinder vs = vs & curBinder .~ findNext (vs^.curBinder) (vs^.binders)
   where findNext :: Eq a => a -> [a] -> a
@@ -190,10 +216,14 @@ unstepBinder vs = vs & curBinder .~ findPrev (vs^.curBinder) (vs^.binders)
           | Just i <- x `elemIndex` xs, i > 0 = xs !! (i - 1)
           | otherwise                         = x
 
-
-step, unstep, reset :: Diff term
-                    => VizState term -> VizState term
--- | Proceed to the next state.
+-- | Cycle through transformations of the current binder in the /local/ state.
+--
+--   [@step@] Proceed forward.
+--
+--   [@unstep@] Proceed backward.
+--
+--   [@reset@] Reset to the initial state.
+step, unstep, reset :: Diff term => VizState term -> VizState term
 step prev@(VizState []     _ _    _    _ _ _) = prev
 step prev@(VizState (t:ts) _ curE curS _ _ _) =
   VizState { _steps     = ts
@@ -203,17 +233,15 @@ step prev@(VizState (t:ts) _ curE curS _ _ _) =
            , _curOccur  = 0
            , _leftN     = 0
            , _rightN    = 0 }
--- | Go back to the previous state.
 unstep st = case st^.prevState of
   Nothing   -> st
   Just prev -> prev
--- | Reset to the initial state.
 reset first@(VizState _ Nothing _ _ _ _ _) = first
 reset (VizState _ (Just prev) _ _ _ _ _)   = reset prev
 
----------------------------------------------------------
--- Actions.
+-- * User-issued commands.
 
+-- | Some user commands have a notion of direction; either going forth or back.
 data Direction = Forward | Backward
 
 -- | Move to a specified step of the transformations of the current binder.

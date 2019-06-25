@@ -3,11 +3,11 @@
   License     :  BSD2 (see the file LICENSE)
   Maintainer  :  Orestis Melkonian <melkon.or@gmail.com>
 
-  Basic functionality for the terminal UI.
+  Basic functionality for the terminal user-inteface (TUI).
 -}
 {-# LANGUAGE OverloadedStrings #-}
 
-module BrickUI (runTerminal) where
+module BrickUI where
 
 import System.Environment  (getArgs)
 import Control.Applicative ((<|>))
@@ -35,7 +35,7 @@ import Gen
 import Types
 import Pretty
 
--- | Entry point.
+-- | Entry point for the TUI.
 runTerminal :: forall term. Diff term => FilePath -> IO ()
 runTerminal ftheme = do
   res <- loadCustomizations ftheme (defaultTheme $ userStyles @term)
@@ -52,15 +52,15 @@ runTerminal ftheme = do
         (app @term (themeToAttrMap theme))  -- the Brick application
         (createVizStates @term hist)        -- initial state
 
--- | The Brick App.
-app :: forall term. Diff term
-    => B.AttrMap -> App (VizStates term) NoCustomEvent Name
-app attrMap = App { appDraw         = drawUI
-                  , appChooseCursor = chooseCursor
-                  , appHandleEvent  = handleStart
-                  , appStartEvent   = (lookupSize <*>) . return
-                  , appAttrMap      = const attrMap
-                  }
+-- | The 'Brick.App' configuration.
+app :: Diff term => B.AttrMap -> App (VizStates term) NoCustomEvent Name
+app attrMap = App
+  { appDraw         = drawUI
+  , appChooseCursor = chooseCursor
+  , appHandleEvent  = handleStart
+  , appStartEvent   = (lookupSize <*>) . return
+  , appAttrMap      = const attrMap
+  }
 
 -- | Choose a single cursor to display, out of possibly many requests.
 chooseCursor :: VizStates term -> [Cursor] -> Maybe Cursor
@@ -70,11 +70,12 @@ chooseCursor st ls
   where
     isSearch :: Cursor -> Bool
     isSearch = \case
-      CursorLocation {cursorLocationName = Just (SearchResult _ _)} -> True
-      _                                                             -> False
+      CursorLocation {cursorLocationName = Just (SearchResult _)} -> True
+      _                                                           -> False
 
--- | Top-level: Draw all top-level binders and their current step.
--- NB: delegates bottom-level to `drawUI`
+-- * Display.
+
+-- Draw all top-level binders and their current step.
 drawUI :: forall term. Diff term
        => VizStates term -> [Widget Name]
 drawUI vs =
@@ -110,8 +111,7 @@ drawUI vs =
     diff
       | v@(VizState (st:_) _ curE _ curO _ _) <- getCurrentState vs
       = let
-          showE vn = showCode vn
-                              (vs^.scroll)
+          showE vn = showCode (vs^.scroll)
                               (min 80 $ getCodeWidth vs)
                               (vs^.formData^.opts)
                               (st^.ctx)
@@ -178,6 +178,8 @@ drawUI vs =
       where
         button .- desc = hBox [emph button, str $ " : " ++ desc]
 
+-- * Event handling.
+
 -- | Lookup terminal size and store in the current state.
 lookupSize :: EventM Name (VizStates term -> VizStates term)
 lookupSize = do
@@ -219,7 +221,7 @@ handleEvent vs ev@(VtyEvent (V.EvKey key mods))
 
   -- some controls are disabled when the user is writing in the input form
   | [] <- mods
-  , focusGetCurrent (Bf.formFocus (vs^.form)) /= Just (FormField "Trans")
+  , focusGetCurrent (Bf.formFocus (vs^.form)) /= Just (FormField "Command")
   = sometimes
 
   -- the rest of the controls are active all the time
@@ -248,9 +250,9 @@ handleEvent vs ev@(VtyEvent (V.EvKey key mods))
     contF      = (>> continue (vs & scroll .~ False))
     bottom fg  = continue $ updateState vs (fg $ getCurrentState vs)
                           & scroll .~ True
-    action dir  = case vs^.formData.trans of
+    action dir  = case vs^.formData.com of
       Step n   -> bottom $ moveTo n
-      Name s   -> bottom $ nextTrans dir s
+      Trans s  -> bottom $ nextTrans dir s
       Search _ -> bottom $ nextOccur dir
 
     sometimes = case key of
@@ -301,22 +303,24 @@ handleEvent vs ev@(VtyEvent (V.EvKey key mods))
     -- form-handler
     formHandler = do
       fm' <- Bf.handleFormEvent ev (vs^.form)
-      let tr          = (Bf.formState fm')^.trans
+      let cm          = (Bf.formState fm')^.com
           (_, tot, _) = getStep vs (vs^.curBinder)
-          valid       = case tr of Step n  -> n > 0 && n <= tot
+          valid       = case cm of Step n  -> n > 0 && n <= tot
                                    _       -> True
-      continue $ vs & form .~ Bf.setFieldValid valid (FormField "Trans") fm'
+      continue $ vs & form .~ Bf.setFieldValid valid (FormField "Command") fm'
 
 -- no-op event
 handleEvent vs _ = continue vs
 
--- Scrolling, viewports.
+-- * Scrolling.
+
+-- | The amount of scrolling with each request (in pixels).
+scrollStep :: Int
+scrollStep = 5
+
 l, r :: B.ViewportScroll Name
 l = B.viewportScroll LeftViewport
 r = B.viewportScroll RightViewport
-
-scrollStep :: Int
-scrollStep = 5
 
 vScrollL, vScrollR, hScrollL, hScrollR, vScrollL', vScrollR', hScrollL', hScrollR',
   vScrollHomeL, vScrollHomeR, vScrollEndL, vScrollEndR :: EventM Name ()
@@ -333,26 +337,32 @@ vScrollHomeR = B.vScrollToBeginning r
 vScrollEndL  = B.vScrollToEnd l
 vScrollEndR  = B.vScrollToEnd r
 
+-- | Gather all cursor placement requests coming from within the given 'Widget',
+-- filter out only those that are the result of a /search/ command,
+-- and convert the current one (based on the current occurrence number)
+-- to a visibility request.
+-- NB: Only to be used within a 'viewport'.
 visibleCursors :: Int -> Widget Name -> Widget Name
 visibleCursors n p = Widget (hSize p) (vSize p) $ do
   res <- B.render p
-  let size = (res^.imageL.to V.imageWidth, res^.imageL.to V.imageHeight)
   let crs  = map fst
-           $ sortOn ((\case (SearchResult _ i) -> i) . snd)
+           $ sortOn ((\case (SearchResult i) -> i) . snd)
            $ catMaybes
            $ map (\c ->  case cursorLocationName c of
-              Just s@(SearchResult n _) -> Just (c, s)
-              _                         -> Nothing)
+              Just s@(SearchResult _) -> Just (c, s)
+              _                       -> Nothing)
            $ (res^.cursorsL)
   if null crs then
     return res
   else do
     let c = crs !! (n `mod` length crs)
     return $ res & visibilityRequestsL .~ [VR { vrPosition = cursorLocation c
-                                              , vrSize = size
+                                              , vrSize     = (1, 1)
                                               }]
                  & cursorsL .~ [c]
 
+-- | Remove all cursor placement requests coming from within the given 'Widget'.
+-- NB: Only to be used within a 'viewport'.
 invisibleCursors :: Widget n -> Widget n
 invisibleCursors p = Widget (hSize p) (vSize p) $ do
   res <- B.render p
