@@ -2,10 +2,8 @@
   Copyright   :  (C) 2019, QBayLogic
   License     :  BSD2 (see the file LICENSE)
   Maintainer  :  Orestis Melkonian <melkon.or@gmail.com>
-
-  Entry point for the @clash-term@ executable.
 -}
-{-# LANGUAGE OverloadedStrings, TypeApplications, TypeFamilies #-}
+{-# LANGUAGE TypeApplications, TypeFamilies #-}
 
 {-# OPTIONS_GHC -fno-warn-orphans       #-}
 {-# OPTIONS_GHC -fno-warn-type-defaults #-}
@@ -13,13 +11,13 @@
 module Main (main) where
 
 import GHC.Generics (Generic)
-import Data.Text.Prettyprint.Doc (annotate, hsep, pretty)
+import Data.Text.Prettyprint.Doc (annotate, vsep, pretty)
 
 import Gen
 import BrickUI (runTerminal)
 
 main :: IO ()
-main = runTerminal @Expr "app/theme.ini"
+main = runTerminal @Expr "examples/str/theme.ini"
 
 -------------------------------
 -- Adhoc instance for Diff.
@@ -54,11 +52,12 @@ instance Diff Expr where
                                  }
                          ]
 
-  ppr' _    (N n)      = pretty n
-  ppr' opts (e :+: e') = hsep [ annotate L (ppr' opts e)
-                              , "+"
-                              , annotate R (ppr' opts e')
-                              ]
+  ppr' _    (N n)      = pretty $ case n of {1 -> "one" ; 2 -> "two" ; 3 -> "three" ; _ -> "..."}
+  ppr' opts (e :+: e') = vsep $ [ annotate L (ppr' opts e) ]
+                             ++ replicate 25 (pretty " ")
+                             ++ [pretty "plus"]
+                             ++ replicate 25 (pretty " ")
+                             ++ [ annotate R (ppr' opts e') ]
 
   patch _ []     e' = e'
   patch curE (c:cs) e' = let go e = patch e cs e' in

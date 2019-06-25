@@ -42,6 +42,7 @@ instance Show Syntax where
 -- Generic interface.
 
 class Eq (Ctx term) => Diff term where
+  -- T0D0 type family deps
   type Ann     term :: *
   type Options term :: *
   type Ctx     term :: *

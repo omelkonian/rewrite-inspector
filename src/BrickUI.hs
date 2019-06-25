@@ -9,12 +9,18 @@
 
 module BrickUI (runTerminal) where
 
-import System.Environment (getArgs)
-import Control.Monad      (void, (>>))
+import System.Environment  (getArgs)
+import Control.Applicative ((<|>))
+import Control.Monad       (void, (>>))
+import Data.List           (sortOn)
+import Data.Maybe          (isJust, listToMaybe, catMaybes)
 import Lens.Micro
 
 import Brick
-  ( App (..), BrickEvent (..), EventM, Next, Widget
+  ( App (..), BrickEvent (..), EventM, Next, Widget (..)
+  , CursorLocation (..), cursorLocationName, cursorsL
+  , VisibilityRequest (..), visibilityRequestsL
+  , hSize, vSize, imageL
   , continue, halt
   , str, vBox, hBox
   )
@@ -50,11 +56,22 @@ runTerminal ftheme = do
 app :: forall term. Diff term
     => B.AttrMap -> App (VizStates term) NoCustomEvent Name
 app attrMap = App { appDraw         = drawUI
-                  , appChooseCursor = focusRingCursor (Bf.formFocus . _form)
+                  , appChooseCursor = chooseCursor
                   , appHandleEvent  = handleStart
                   , appStartEvent   = (lookupSize <*>) . return
                   , appAttrMap      = const attrMap
                   }
+
+-- | Choose a single cursor to display, out of possibly many requests.
+chooseCursor :: VizStates term -> [Cursor] -> Maybe Cursor
+chooseCursor st ls
+  =  (listToMaybe $ filter isSearch ls)
+ <|> (focusRingCursor (Bf.formFocus . _form) st ls)
+  where
+    isSearch :: Cursor -> Bool
+    isSearch = \case
+      CursorLocation {cursorLocationName = Just (SearchResult _ _)} -> True
+      _                                                             -> False
 
 -- | Top-level: Draw all top-level binders and their current step.
 -- NB: delegates bottom-level to `drawUI`
@@ -70,7 +87,11 @@ drawUI vs =
           C.hCenter $
             hBoxSpaced 2 (drawBndr <$> vs^.binders)
       , diff
-      , B.vLimitPercent 10 inputForm
+      , B.vLimitPercent 10 $
+          hBox
+            [ inputForm
+            , searchMatches
+            ]
       ]
   ]
   where
@@ -87,20 +108,27 @@ drawUI vs =
     -- display the diff of this rewrite step
     diff :: Widget Name
     diff
-      | v@(VizState (st:_) _ curE _) <- getCurrentState vs
+      | v@(VizState (st:_) _ curE _ curO _ _) <- getCurrentState vs
       = let
-          showE = showCode (vs^.scroll)
-                           (min 80 $ getCodeWidth vs)
-                           (vs^.formData^.opts)
-                           (case vs^.formData.trans of {Search s -> s; _ -> ""})
-                           (st^.ctx)
+          showE vn = showCode vn
+                              (vs^.scroll)
+                              (min 80 $ getCodeWidth vs)
+                              (vs^.formData^.opts)
+                              (st^.ctx)
+                              (getSearchString vs)
           nextE = step v ^. curExpr
+          (visL, visR) | v^.curOccur < v^.leftN
+                       = (visibleCursors curO, invisibleCursors)
+                       | otherwise
+                       = (invisibleCursors, visibleCursors (curO - v^.leftN))
         in
           hBoxSpaced 2
             [ B.viewport LeftViewport B.Both $
-                withBorder "Before" $ showE curE
+                visL $
+                  withBorder "Before" $ showE LeftViewport curE
             , B.viewport RightViewport B.Both $
-                withBorder "After" $ showE nextE
+                visR $
+                  withBorder "After" $ showE RightViewport nextE
             ]
 
       | otherwise
@@ -112,6 +140,17 @@ drawUI vs =
               $ Bf.renderForm
               $ Bf.setFormConcat (hBoxSpaced 10)
               $ vs^.form
+
+    searchMatches :: Widget Name
+    searchMatches = C.vCenter $ str (n ++ " out of " ++ tot ++ " matches")
+      where
+        (n, tot)
+          | v@(VizState (_:_) _ curE _ _ _ _) <- getCurrentState vs
+          , let lr = v^.leftN + v^.rightN
+          , lr > 0
+          = (show (v^.curOccur + 1), show lr)
+          | otherwise
+          = ("-", "-")
 
     -- display the keyboard controls
     controlsOffset :: (Int, Int)
@@ -132,20 +171,35 @@ drawUI vs =
       , "Ins/Del"                 .- "scroll both panes (left/right)"
       , "Ctrl-p"                  .- "show/hide keyboard controls"
       , "(Shift-)Tab"             .- "cycle through input fields"
-      , "Enter"                   .- "submit move action"
+      , "Enter"                   .- "submit move action (forward)"
+      , "KBS/Ctrl-b"              .- "submit move action (backward)"
       , "Space"                   .- "toggle flag"
       ]
       where
         button .- desc = hBox [emph button, str $ " : " ++ desc]
 
--- Lookup terminal size and store in the current state.
+-- | Lookup terminal size and store in the current state.
 lookupSize :: EventM Name (VizStates term -> VizStates term)
 lookupSize = do
   out    <- V.outputIface <$> B.getVtyHandle
   (w, h) <- V.displayBounds out
   return $ (width .~ w) . (height .~ h)
 
--- Lookup code sizes and store them in the current state, then handle events.
+-- | Update number of occurrences of searched string in both viewports.
+updateOcc :: Diff term => VizStates term -> VizStates term
+updateOcc vs
+  | v@(VizState (_:_) _ curE _ _ _ _) <- getCurrentState vs
+  , let ln = countOcc (vs^.formData^.opts) (getSearchString vs) curE
+        rn = countOcc (vs^.formData^.opts) (getSearchString vs) (step v ^. curExpr)
+  , ln + rn > 0
+  = updateState vs $ v & leftN    .~ ln
+                       & rightN   .~ rn
+                       & curOccur .~ ((v^.curOccur) `mod` (ln + rn))
+
+  | otherwise
+  = vs
+
+-- | Lookup code sizes and store them in the current state, then handle events.
 handleStart :: forall term. Diff term
             => VizStates term
             -> BrickEvent Name NoCustomEvent
@@ -154,7 +208,7 @@ handleStart vs ev = do
   pre <- lookupSize
   vs' <- handleEvent (pre vs) ev
   post <- lookupSize
-  return (post <$> vs')
+  return (updateOcc . post <$> vs')
 
 -- | Handle keyboard events.
 handleEvent :: Diff term
@@ -173,17 +227,14 @@ handleEvent vs ev@(VtyEvent (V.EvKey key mods))
   = always
 
   | [V.MShift] <- mods
-  = case key of
-      -- search (next)
-      V.KEnter -> search unstep
-      _        -> shiftScroll
+  = shiftScroll
 
   | [V.MCtrl] <- mods
   = case key of
       -- show/hide bottom pane
       V.KChar 'p' -> continue (vs & showBot %~ not)
-      -- search (previous)
-      V.KEnter    -> search unstep
+      -- action (forward)
+      V.KChar 'b' -> action Backward
       -- change top-level binder
       V.KChar 'l' -> contT (stepBinder vs)
       V.KChar 'k' -> contT (unstepBinder vs)
@@ -197,16 +248,16 @@ handleEvent vs ev@(VtyEvent (V.EvKey key mods))
     contF      = (>> continue (vs & scroll .~ False))
     bottom fg  = continue $ updateState vs (fg $ getCurrentState vs)
                           & scroll .~ True
-    search f  = case vs^.formData.trans of
+    action dir  = case vs^.formData.trans of
       Step n   -> bottom $ moveTo n
-      Name s   -> bottom $ nextTrans f s
-      _        -> continue vs
+      Name s   -> bottom $ nextTrans dir s
+      Search _ -> bottom $ nextOccur dir
 
     sometimes = case key of
       -- reset to initial step (of current binder)
       V.KChar 'r' -> bottom reset
       -- move to previous step/transformation
-      V.KBS       -> search unstep
+      V.KBS       -> action Backward
       -- change top-level binder
       V.KRight    -> contT (stepBinder vs)
       V.KLeft     -> contT (unstepBinder vs)
@@ -227,7 +278,7 @@ handleEvent vs ev@(VtyEvent (V.EvKey key mods))
       V.KDel      -> contF (hScrollL  >> hScrollR)
       V.KIns      -> contF (hScrollL' >> hScrollR')
       -- move to next step/transformation
-      V.KEnter    -> search step
+      V.KEnter    -> action Forward
       -- dispatch to form handler
       _           -> formHandler
 
@@ -281,3 +332,28 @@ vScrollHomeL = B.vScrollToBeginning l
 vScrollHomeR = B.vScrollToBeginning r
 vScrollEndL  = B.vScrollToEnd l
 vScrollEndR  = B.vScrollToEnd r
+
+visibleCursors :: Int -> Widget Name -> Widget Name
+visibleCursors n p = Widget (hSize p) (vSize p) $ do
+  res <- B.render p
+  let size = (res^.imageL.to V.imageWidth, res^.imageL.to V.imageHeight)
+  let crs  = map fst
+           $ sortOn ((\case (SearchResult _ i) -> i) . snd)
+           $ catMaybes
+           $ map (\c ->  case cursorLocationName c of
+              Just s@(SearchResult n _) -> Just (c, s)
+              _                         -> Nothing)
+           $ (res^.cursorsL)
+  if null crs then
+    return res
+  else do
+    let c = crs !! (n `mod` length crs)
+    return $ res & visibilityRequestsL .~ [VR { vrPosition = cursorLocation c
+                                              , vrSize = size
+                                              }]
+                 & cursorsL .~ [c]
+
+invisibleCursors :: Widget n -> Widget n
+invisibleCursors p = Widget (hSize p) (vSize p) $ do
+  res <- B.render p
+  return $ res & cursorsL .~ []

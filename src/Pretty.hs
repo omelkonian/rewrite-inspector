@@ -12,6 +12,14 @@
 
 module Pretty where
 
+import Control.Arrow (first, second)
+
+import Data.List                 (nub, isPrefixOf, findIndices, sortOn)
+import Data.Text                 (unpack)
+import Data.Text.Prettyprint.Doc ( layoutPretty, layoutCompact
+                                 , LayoutOptions (..)
+                                 , PageWidth (..), SimpleDocStream (..) )
+
 import Brick (Widget, str, hBox, vBox)
 import qualified Brick                      as B
 import qualified Brick.Forms                as Bf
@@ -21,36 +29,52 @@ import qualified Brick.Widgets.Border       as Br
 import qualified Brick.Widgets.Border.Style as BrS
 import qualified Graphics.Vty               as V
 
-import Data.List                 (nub, isPrefixOf, findIndices, sortOn)
-import Data.Text                 (unpack)
-import Data.Text.Prettyprint.Doc ( layoutPretty, LayoutOptions (..)
-                                 , PageWidth (..), SimpleDocStream (..) )
 
 import Gen
+import Types
 
 ----------------------------------------------------------------------------
 -- Pretty-printing Cλash Core.
 
+countOcc
+  :: forall term
+   . Diff term
+  => Options term  -- ^ options for Clash's pretty-printer
+  -> String        -- ^ the string to search for
+  -> term          -- ^ code to search in
+  -> Int           -- ^ total number of occurrences
+countOcc opts searchString
+  = foldl (\cur d -> cur + countDoc d) 0
+  . myForm @term [] [] [] []
+  . layoutCompact
+  . ppr' @term opts
+  where
+    countDoc :: MyDoc -> Int
+    countDoc = \case
+      MString s -> snd (highlightSearch undefined 0 s searchString)
+      MMod _ d  -> countDoc d
+      MLine _   -> 0
 
-showCode :: forall n term
-          . Diff term
-         => Bool          -- ^ whether to scroll to focused region
-         -> Int           -- ^ maximum line width
-         -> Options term  -- ^ options for Clash's pretty-printer
-         -> String        -- ^ the string to search for
-         -> [Ctx term]    -- ^ the current context
-         -> term          -- ^ code to display
-         -> Widget n      -- ^ the Brick widget to display
-showCode scroll w opts searchString ctx0 =
-    vBox
-  . fmap (render scroll searchString) . split . (MLine 0 :)
+showCode
+  :: forall n term
+   . Diff term
+  => Name          -- ^ viewport name
+  -> Bool          -- ^ whether to scroll to focused region
+  -> Int           -- ^ maximum line width
+  -> Options term  -- ^ options for Clash's pretty-printer
+  -> [Ctx term]    -- ^ the current context
+  -> String        -- ^ the string to search for
+  -> term          -- ^ code to display
+  -> Widget Name   -- ^ the Brick widget to display
+showCode vn scroll w opts ctx0 searchString
+  = vBox
+  . fmap (render vn scroll searchString 0) . split . (MLine 0 :)
   . myForm @term ctx0 [] [] []
   . layoutPretty (LayoutOptions (AvailablePerLine w 0.8))
   . ppr' @term opts
 
 -- Convert a stream into our simpler data type.
-data MyDoc = MChar Char
-           | MString String
+data MyDoc = MString String
            | MLine Int
            | MMod [String] MyDoc
 
@@ -83,14 +107,23 @@ split (MLine i : ys) = (i, ysL) : split ysR
 split _              = error "split: does not start with STLine"
 
 -- Render a single line in Brick (highlighting when marked).
-render :: Bool -> String -> (Int, [MyDoc]) -> Widget n
-render scroll searchString (i, xs) = B.padLeft (B.Pad i) $ hBox $ render1 <$> xs
+render :: Name -> Bool -> String -> Int -> (Int, [MyDoc]) -> Widget Name
+render vn scroll searchString n0 (i, xs) = B.padLeft (B.Pad i)
+                                   $ hBox
+                                   $ render1 n0 xs
   where
-    render1 :: MyDoc -> Widget n
-    render1 = \case
-      MMod attrs x -> modify scroll (nub attrs) (render1 x)
-      MString s    -> highlightSearch s searchString
+    render1 :: Int -> [MyDoc] -> [Widget Name]
+    render1 _ []       = []
+    render1 n (d : ds) = w : render1 n' ds
+      where (w, n') = f n d
+
+    f :: Int -> MyDoc -> (Widget Name, Int)
+    f n = \case
+      MMod attrs w -> first (modify scroll (nub attrs)) (f n w)
+      MString s    -> highlightSearch vn n s searchString
       _            -> error "render1"
+
+
 
 ----------------------------------------------------------------------------
 -- UI Styling.
@@ -120,12 +153,28 @@ modify scroll = foldr (.) id . fmap mod1 . sortOn (\case "Type" -> 1; _ -> 0)
     mod1 "focus" = (if scroll then B.visible else id) . B.withDefAttr "focus"
     mod1 attr    = B.withDefAttr (B.attrName attr)
 
-highlightSearch :: String -> String -> Widget n
-highlightSearch s0 toS
-  | null toS  = str s0
-  | otherwise = hBox $ mark <$> find s0 (findIndices (== head toS) s0)
+highlightSearch
+  :: Name    -- ^ viewport name
+  -> Int     -- ^ occurrences so far
+  -> String  -- ^ the whole string (haystack)
+  -> String  -- ^ the string to search for (needle)
+  -> ( Widget Name  -- ^ resulting widget
+     , Int          -- ^ updated number of occurrences
+     )
+highlightSearch vn n0 s0 toS =
+  case toS of
+    []    -> (str s0,  n0)
+    (c:_) -> first hBox $ go n0 (find s0 (findIndices (== c) s0))
   where
-    mark = \case Left s -> str s; Right s -> B.forceAttr "search" $ str s
+    go n []       = ([], n)
+    go n (x : xs) = first (x' :) $ go n' xs
+      where
+        (x', n') = case x of
+          Left  s -> (str s, n)
+          Right s -> ( ( B.showCursor (SearchResult vn n) (B.Location (1,0))
+                       $ B.forceAttr "search"
+                       $ str s )
+                     , n + 1 )
 
     find :: String -> [Int] -> [Either String String]
     find s []     = [Left s]

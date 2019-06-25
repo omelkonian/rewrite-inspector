@@ -16,10 +16,10 @@ import Data.Map   ((!), Map, insert, fromList)
 import Text.Read  (readMaybe)
 import Data.Text  (pack, unpack)
 
-import Lens.Micro    ((^.), (&), (.~), Lens', lens)
+import Lens.Micro    ((^.), (&), (.~), (%~), Lens', lens)
 import Lens.Micro.TH (makeLenses)
 
-import Brick       ((<+>), str, txt)
+import Brick       ((<+>), str, txt, CursorLocation)
 import Brick.Forms ((@@=), checkboxField, editField, formState, newForm, Form)
 
 import Gen
@@ -33,7 +33,14 @@ data Name
   -- ^ viewports
   | FormField String
   -- ^ form fields
+  | SearchResult
+      Name {- viewport name -}
+      Int  {- occurrence -}
+  -- ^ search results with numbered occurrences
+  | Other
   deriving (Eq, Ord, Show)
+
+type Cursor = CursorLocation Name
 
 data Trans
   = Step Int
@@ -60,6 +67,9 @@ data VizState term = VizState
   -- ^ current (intermediate) expression
   , _curStep   :: Int
   -- ^ current step in given top-level entity
+  , _curOccur  :: Int
+  , _leftN     :: Int -- # of occurrences in the left viewport
+  , _rightN    :: Int -- # of occurrences in the right viewport
   }
 makeLenses ''VizState
 
@@ -133,7 +143,10 @@ initialState :: Diff term
 initialState hist = VizState { _steps      = hist
                              , _prevState  = Nothing
                              , _curExpr    = initialExpr hist
-                             , _curStep    = 1 }
+                             , _curStep    = 1
+                             , _curOccur   = 0
+                             , _leftN      = 0
+                             , _rightN     = 0 }
 
 currentStepName :: VizState term -> String
 currentStepName v =
@@ -150,6 +163,9 @@ getStep vs bndr = (cur, cur + length (v^.steps), currentStepName v)
 
 getCurrentState :: VizStates term -> VizState term
 getCurrentState vs = (vs^.states) ! (vs^.curBinder)
+
+getSearchString :: Diff term => VizStates term -> String
+getSearchString vs = case vs^.formData.trans of { Search s -> s; _ -> "" }
 
 formData :: forall term
           . Diff term
@@ -178,35 +194,40 @@ unstepBinder vs = vs & curBinder .~ findPrev (vs^.curBinder) (vs^.binders)
 step, unstep, reset :: Diff term
                     => VizState term -> VizState term
 -- | Proceed to the next state.
-step prev@(VizState []     _ _    _)    = prev
-step prev@(VizState (t:ts) _ curE curS) =
+step prev@(VizState []     _ _    _    _ _ _) = prev
+step prev@(VizState (t:ts) _ curE curS _ _ _) =
   VizState { _steps     = ts
            , _prevState = Just prev
            , _curExpr   = patch curE (t^.ctx) (t^.after)
            , _curStep   = curS + 1
-           }
+           , _curOccur  = 0
+           , _leftN     = 0
+           , _rightN    = 0 }
 -- | Go back to the previous state.
 unstep st = case st^.prevState of
   Nothing   -> st
   Just prev -> prev
 -- | Reset to the initial state.
-reset first@(VizState _ Nothing _ _) = first
-reset (VizState _ (Just prev) _ _)   = reset prev
+reset first@(VizState _ Nothing _ _ _ _ _) = first
+reset (VizState _ (Just prev) _ _ _ _ _)   = reset prev
+
+---------------------------------------------------------
+-- Actions.
+
+data Direction = Forward | Backward
 
 -- | Move to a specified step of the transformations of the current binder.
-moveTo :: Diff term
-       => Int -> VizState term -> VizState term
+moveTo :: Diff term => Int -> VizState term -> VizState term
 moveTo n v = if (v^.curStep) == (v'^.curStep) then v else moveTo n v'
   where v' = case n `compare` (v^.curStep) of { EQ -> v
                                               ; LT -> unstep v
                                               ; GT -> step v }
 
 -- | Move to the next/previous step with the given transformation name.
-nextTrans :: Diff term
-          => (VizState term -> VizState term)
-          -> String -> VizState term -> VizState term
-nextTrans f (map toLower -> s) v0 = go (f v0)
+nextTrans :: Diff term => Direction -> String -> VizState term -> VizState term
+nextTrans dir (map toLower -> s) v0 = go (next v0)
   where
+    next = case dir of { Forward -> step ; Backward -> unstep }
     startStep = v0^.curStep
     go v -- not found, abort
          | v^.curStep == startStep = v
@@ -216,4 +237,11 @@ nextTrans f (map toLower -> s) v0 = go (f v0)
          | (st:_) <- v^.steps
          , s `isInfixOf` (toLower <$> st^.name) = v
          -- continue searching..
-         | otherwise = go (f v)
+         | otherwise = go (next v)
+
+-- | Cycle through search occurrences.
+nextOccur :: Diff term => Direction -> VizState term -> VizState term
+nextOccur Forward  v = v & curOccur %~ (+ 1)
+nextOccur Backward v = v & curOccur %~ back
+  where back 0 = max 0 (v^.leftN + v^.rightN - 1)
+        back i = i - 1
