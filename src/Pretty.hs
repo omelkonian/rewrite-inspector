@@ -158,8 +158,8 @@ highlightSearch
   -> Int     -- ^ occurrences so far
   -> String  -- ^ the whole string (haystack)
   -> String  -- ^ the string to search for (needle)
-  -> ( Widget Name  -- ^ resulting widget
-     , Int          -- ^ updated number of occurrences
+  -> ( Widget Name  -- resulting widget
+     , Int          -- updated number of occurrences
      )
 highlightSearch vn n0 s0 toS =
   case toS of
