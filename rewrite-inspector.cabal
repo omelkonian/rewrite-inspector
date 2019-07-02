@@ -1,5 +1,5 @@
 name: rewrite-inspector
-version: 0.1.0.8
+version: 0.1.0.9
 cabal-version: >=1.10
 build-type: Simple
 license: BSD3
@@ -42,8 +42,8 @@ library
                       microlens-th,
                       data-default  >= 0.7.1.1
 
-
-    default-language: Haskell2010
+    ghc-options:        -Wall
+    default-language:   Haskell2010
     default-extensions: ScopedTypeVariables
                         ViewPatterns
                         LambdaCase

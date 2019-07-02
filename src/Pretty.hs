@@ -12,8 +12,7 @@
 
 module Pretty where
 
-import Control.Arrow (first, second)
-
+import Control.Arrow             (first)
 import Data.List                 (nub, isPrefixOf, findIndices, sortOn)
 import Data.Text                 (unpack)
 import Data.Text.Prettyprint.Doc ( layoutPretty, layoutCompact
@@ -42,11 +41,11 @@ countOcc
   -> String        -- ^ the string to search for
   -> term          -- ^ code to search in
   -> Int           -- ^ total number of occurrences
-countOcc opts searchString
+countOcc pOpts searchString
   = foldl (\cur d -> cur + countDoc d) 0
   . myForm @term []
   . layoutCompact
-  . ppr' @term opts
+  . ppr' @term pOpts
   where
     countDoc :: MyDoc -> Int
     countDoc = \case
@@ -56,7 +55,7 @@ countOcc opts searchString
 
 -- | Render the given expression as a 'Brick.Widget'.
 showCode
-  :: forall n term
+  :: forall term
    . Diff term
   => Bool          -- ^ whether to scroll to focused region
   -> Int           -- ^ maximum line width
@@ -65,12 +64,12 @@ showCode
   -> String        -- ^ the string to search for
   -> term          -- ^ code to display
   -> Widget Name   -- ^ the Brick widget to display
-showCode scroll w opts ctx0 searchString
+showCode toScroll w pOpts ctx0 searchString
   = vBox
-  . fmap (render scroll searchString 0) . split . (MLine 0 :)
+  . fmap (render toScroll searchString 0) . split . (MLine 0 :)
   . myForm @term ctx0
   . layoutPretty (LayoutOptions (AvailablePerLine w 0.8))
-  . ppr' @term opts
+  . ppr' @term pOpts
 
 -- | A simpler document type, specific to our use-case.
 data MyDoc = MString String
@@ -113,7 +112,7 @@ split _              = error "split: does not start with STLine"
 
 -- | Render a single line in Brick (highlighting when marked).
 render :: Bool -> String -> Int -> (Int, [MyDoc]) -> Widget Name
-render scroll searchString n0 (i, xs) = B.padLeft (B.Pad i)
+render toScroll searchString n0 (i, xs) = B.padLeft (B.Pad i)
                                    $ hBox
                                    $ render1 n0 xs
   where
@@ -124,7 +123,7 @@ render scroll searchString n0 (i, xs) = B.padLeft (B.Pad i)
 
     f :: Int -> MyDoc -> (Widget Name, Int)
     f n = \case
-      MMod attrs w -> first (modify scroll (nub attrs)) (f n w)
+      MMod attrs w -> first (modify toScroll (nub attrs)) (f n w)
       MString s    -> highlightSearch n s searchString
       _            -> error "render1"
 
@@ -152,9 +151,9 @@ defaultTheme extraAttrs = Bt.newTheme V.defAttr $
 
 -- | Add a list of stylistic modifications to a 'Widget'.
 modify :: Bool -> [String] -> Widget n -> Widget n
-modify scroll = foldr (.) id . fmap mod1 . sortOn (\case "Type" -> 1; _ -> 0)
+modify toScroll = foldr (.) id . fmap mod1 . sortOn (\case "Type" -> 1; _ -> 0)
   where
-    mod1 "focus" = (if scroll then B.visible else id) . B.withDefAttr "focus"
+    mod1 "focus" = (if toScroll then B.visible else id) . B.withDefAttr "focus"
     mod1 attr    = B.withDefAttr (B.attrName attr)
 
 -- | Highlight searched occurrences inside the given 'Widget'.

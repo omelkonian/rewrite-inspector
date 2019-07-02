@@ -5,23 +5,30 @@
 
   Basic functionality for the terminal user-inteface (TUI).
 -}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, FlexibleInstances #-}
+
+{-# OPTIONS_GHC -fno-warn-orphans       #-}
 
 module BrickUI where
 
-import System.Environment  (getArgs)
-import Control.Applicative ((<|>))
-import Control.Monad       (void, (>>))
+import Prelude hiding (fail)
+
+import System.Environment     (getArgs)
+import Control.Applicative    ((<|>))
+import Control.Monad          (void, (>>))
+import Control.Monad.Fail     (MonadFail (..))
+import Control.Monad.IO.Class (liftIO)
+
 import Data.Either         (fromRight)
 import Data.List           (sortOn)
-import Data.Maybe          (isJust, listToMaybe, catMaybes)
+import Data.Maybe          (listToMaybe, catMaybes)
 import Lens.Micro
 
 import Brick
   ( App (..), BrickEvent (..), EventM, Next, Widget (..)
   , CursorLocation (..), cursorLocationName, cursorsL
   , VisibilityRequest (..), visibilityRequestsL
-  , hSize, vSize, imageL
+  , hSize, vSize
   , continue, halt
   , str, vBox, hBox
   )
@@ -112,11 +119,11 @@ drawUI vs =
     diff
       | v@(VizState (st:_) _ curE _ curO _ _) <- getCurrentState vs
       = let
-          showE vn = showCode (vs^.scroll)
-                              (min 80 $ getCodeWidth vs)
-                              (vs^.formData^.opts)
-                              (st^.ctx)
-                              (getSearchString vs)
+          showE = showCode (vs^.scroll)
+                           (min 80 $ getCodeWidth vs)
+                           (vs^.formData^.opts)
+                           (st^.ctx)
+                           (getSearchString vs)
           nextE = step v ^. curExpr
           (visL, visR) | v^.curOccur < v^.leftN
                        = (visibleCursors curO, invisibleCursors)
@@ -126,10 +133,10 @@ drawUI vs =
           hBoxSpaced 2
             [ B.viewport LeftViewport B.Both $
                 visL $
-                  withBorder "Before" $ showE LeftViewport curE
+                  withBorder "Before" $ showE curE
             , B.viewport RightViewport B.Both $
                 visR $
-                  withBorder "After" $ showE RightViewport nextE
+                  withBorder "After" $ showE nextE
             ]
 
       | otherwise
@@ -146,7 +153,7 @@ drawUI vs =
     searchMatches = C.vCenter $ str (n ++ " out of " ++ tot ++ " matches")
       where
         (n, tot)
-          | v@(VizState (_:_) _ curE _ _ _ _) <- getCurrentState vs
+          | v@(VizState (_:_) _ _ _ _ _ _) <- getCurrentState vs
           , let lr = v^.leftN + v^.rightN
           , lr > 0
           = (show (v^.curOccur + 1), show lr)
@@ -181,12 +188,16 @@ drawUI vs =
 
 -- * Event handling.
 
+-- | Allow pattern matches in EventM monadic do blocks.
+instance MonadFail (EventM Name) where
+  fail = liftIO . fail
+
 -- | Lookup terminal size and store in the current state.
 lookupSize :: EventM Name (VizStates term -> VizStates term)
 lookupSize = do
   out    <- V.outputIface <$> B.getVtyHandle
-  bounds <- V.displayBounds out
-  return $ (width .~ fst bounds) . (height .~ snd bounds)
+  (w, h) <- V.displayBounds out
+  return $ (width .~ w) . (height .~ h)
 
 -- | Update number of occurrences of searched string in both viewports.
 updateOcc :: Diff term => VizStates term -> VizStates term
@@ -347,7 +358,7 @@ visibleCursors :: Int -> Widget Name -> Widget Name
 visibleCursors n p = Widget (hSize p) (vSize p) $ do
   res <- B.render p
   let crs  = map fst
-           $ sortOn ((\case (SearchResult i) -> i) . snd)
+           $ sortOn ((\case {SearchResult i -> i; _ -> 0}) . snd)
            $ catMaybes
            $ map (\c ->  case cursorLocationName c of
               Just s@(SearchResult _) -> Just (c, s)
