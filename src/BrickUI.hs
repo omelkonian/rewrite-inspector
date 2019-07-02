@@ -184,8 +184,8 @@ drawUI vs =
 lookupSize :: EventM Name (VizStates term -> VizStates term)
 lookupSize = do
   out    <- V.outputIface <$> B.getVtyHandle
-  (w, h) <- V.displayBounds out
-  return $ (width .~ w) . (height .~ h)
+  bounds <- V.displayBounds out
+  return $ (width .~ fst bounds) . (height .~ snd bounds)
 
 -- | Update number of occurrences of searched string in both viewports.
 updateOcc :: Diff term => VizStates term -> VizStates term
