@@ -12,6 +12,7 @@ module BrickUI where
 import System.Environment  (getArgs)
 import Control.Applicative ((<|>))
 import Control.Monad       (void, (>>))
+import Data.Either         (fromRight)
 import Data.List           (sortOn)
 import Data.Maybe          (isJust, listToMaybe, catMaybes)
 import Lens.Micro
@@ -38,19 +39,19 @@ import Pretty
 -- | Entry point for the TUI.
 runTerminal :: forall term. Diff term => FilePath -> IO ()
 runTerminal ftheme = do
-  res <- loadCustomizations ftheme (defaultTheme $ userStyles @term)
-  case res of
-    Left err ->
-      error $ "[theme.ini] Configuration file is malformed: " ++ err
-    Right theme -> do
-      [fname] <- getArgs
-      hist    <- readHistory @term fname
+  let dtheme = defaultTheme (userStyles @term)
+  theme <- fromRight dtheme <$> loadCustomizations ftheme dtheme
+  args <- getArgs
+  case args of
+    [fname] -> do
+      hist <- readHistory @term fname
       void $ B.customMain
         -- Vty configuration
         (V.mkVty $ V.defaultConfig { V.vtime = Just 100, V.vmin  = Just 1 })
         Nothing                             -- event channel
         (app @term (themeToAttrMap theme))  -- the Brick application
         (createVizStates @term hist)        -- initial state
+    _ -> error "Usage: clash-term <history_file>"
 
 -- | The 'Brick.App' configuration.
 app :: Diff term => B.AttrMap -> App (VizStates term) NoCustomEvent Name
