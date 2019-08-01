@@ -15,9 +15,7 @@ module Pretty where
 import Control.Arrow             (first)
 import Data.List                 (nub, isPrefixOf, findIndices, sortOn)
 import Data.Text                 (unpack)
-import Data.Text.Prettyprint.Doc ( layoutPretty, layoutCompact
-                                 , LayoutOptions (..)
-                                 , PageWidth (..), SimpleDocStream (..) )
+import Data.Text.Prettyprint.Doc (SimpleDocStream (..))
 
 import Brick (Widget, str, hBox, vBox)
 import qualified Brick                      as B
@@ -37,15 +35,15 @@ import Types
 countOcc
   :: forall term
    . Diff term
-  => Options term  -- ^ options for Clash's pretty-printer
-  -> String        -- ^ the string to search for
-  -> term          -- ^ code to search in
-  -> Int           -- ^ total number of occurrences
-countOcc pOpts searchString
+  => String
+  -- ^ the string to search for
+  -> SimpleDocStream (Ann term)
+  -- ^ code to search in
+  -> Int
+  -- ^ total number of occurrences
+countOcc searchString
   = foldl (\cur d -> cur + countDoc d) 0
   . myForm @term []
-  . layoutCompact
-  . ppr' @term pOpts
   where
     countDoc :: MyDoc -> Int
     countDoc = \case
@@ -57,19 +55,20 @@ countOcc pOpts searchString
 showCode
   :: forall term
    . Diff term
-  => Bool          -- ^ whether to scroll to focused region
-  -> Int           -- ^ maximum line width
-  -> Options term  -- ^ options for Clash's pretty-printer
-  -> [Ctx term]    -- ^ the current context
-  -> String        -- ^ the string to search for
-  -> term          -- ^ code to display
-  -> Widget Name   -- ^ the Brick widget to display
-showCode toScroll w pOpts ctx0 searchString
+  => Bool
+  -- ^ whether to scroll to focused region
+  -> [Ctx term]
+  -- ^ the current context
+  -> String
+  -- ^ the string to search for
+  -> SimpleDocStream (Ann term)
+  -- ^ code to display
+  -> Widget Name
+  -- ^ the Brick widget to display
+showCode toScroll ctx0 searchString
   = vBox
   . fmap (render toScroll searchString 0) . split . (MLine 0 :)
   . myForm @term ctx0
-  . layoutPretty (LayoutOptions (AvailablePerLine w 0.8))
-  . ppr' @term pOpts
 
 -- | A simpler document type, specific to our use-case.
 data MyDoc = MString String
@@ -85,10 +84,10 @@ myForm ctx0 = go [] [] []
   where
     go :: [Ctx term] -> [Item] -> [String]
        -> SimpleDocStream (Ann term) -> [MyDoc]
-    go ctx' stack attrs =
+    go curCtx stack attrs =
       let
-        continueWith = go ctx' stack attrs
-        mark         = MMod $ ["focus" | ctx0 `isPrefixOf` ctx'] ++ attrs
+        continueWith = go curCtx stack attrs
+        mark         = MMod $ ["focus" | ctx0 `isPrefixOf` curCtx] ++ attrs
       in \case
         SFail           -> error "split.SFail"
         SEmpty          -> [mark (MString "")]
@@ -96,11 +95,11 @@ myForm ctx0 = go [] [] []
         SText _ s rest  -> mark (MString (unpack s)) : continueWith rest
         SLine i rest    -> MLine i                   : continueWith rest
         SAnnPush a rest -> case handleAnn @term a of
-          Left  s -> go ctx' (Stx:stack) (show s:attrs) rest
-          Right c -> go (ctx' ++ [c]) (Ctx:stack) attrs rest
+          Left  s -> go curCtx (Stx:stack) (show s:attrs) rest
+          Right c -> go (curCtx ++ [c]) (Ctx:stack) attrs rest
         SAnnPop rest -> case top of
-          Stx -> go ctx' stack' (tail attrs) rest
-          Ctx -> go (init ctx') stack' attrs rest
+          Stx -> go curCtx stack' (tail attrs) rest
+          Ctx -> go (init curCtx) stack' attrs rest
           where (top:stack') = stack
 
 -- | Split into individual lines (of some indendation).

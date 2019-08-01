@@ -7,8 +7,8 @@
 -}
 module RewriteInspector
   ( module Gen
-  , runTerminal
+  , runMain
   ) where
 
 import Gen
-import BrickUI (runTerminal)
+import BrickUI    (runMain)

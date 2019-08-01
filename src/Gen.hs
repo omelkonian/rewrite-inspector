@@ -6,17 +6,21 @@
   Generic interface for Term types.
 -}
 {-# LANGUAGE TemplateHaskell #-}
+
 module Gen where
 
 import GHC.Generics (Generic)
 
-import Data.Binary               (Binary, decodeFile)
-import Data.Default              (Default, def)
-import Data.Text.Prettyprint.Doc (Doc)
+import Data.Binary  (Binary, decodeFile)
+
+import Data.Text.Prettyprint.Doc.Internal (Doc (..))
+
+import qualified Graphics.Vty as V
 
 import Lens.Micro.TH (makeLenses)
 
-import qualified Graphics.Vty as V
+-- | Program binders (i.e. top-level identifiers) are identified by their name.
+type Binder = String
 
 -- | Syntactic annotations used for highlighting.
 -- This should be stored in the pretty-printed code output,
@@ -44,9 +48,16 @@ instance Show Syntax where
     Qualifier -> "qualifier"
     Custom s  -> s
 
+class IsoFlags a where
+  toFlags :: a -> [Bool]
+  fromFlags :: [Bool] -> a
+
 -- | This is the typeclass that the user-supplied @term@ type should implement.
 -- It requires all operations, which are necessary for our TUI to runn.
-class Eq (Ctx term) => Diff term where
+class ( Eq (Ctx term), Binary (Ctx term)
+      , Binary (Ann term)
+      , IsoFlags (Options term)
+      ) => Diff term where
   -- | The type of annotations associated to the given @term@ type.
   type Ann     term :: *
   -- | The type of options for the associated pretty-printer for @term@.
@@ -80,12 +91,6 @@ class Eq (Ctx term) => Diff term where
   userStyles :: [(String, V.Attr)]
   userStyles = []
 
-  -- | Initial options for the pretty-printer.
-  initOptions :: Options term
-
-  default initOptions :: Default (Options term) => Options term
-  initOptions = def
-
   -- | Provide the boolean flags of the pretty-printing options.
   -- NB: Lenses are not used here, due to impredicativity...
   flagFields :: [( Options term -> Bool                  -- getter
@@ -94,9 +99,16 @@ class Eq (Ctx term) => Diff term where
                  )]
   flagFields = []
 
+  -- | Initial options for the pretty-printer.
+  initOptions :: Options term
+  initOptions = fromFlags $ replicate (length $ flagFields @term) True
+
   -- | Pretty-print a given expression, given some options.
   -- The resulting document format should contain syntax/context annotations.
   ppr' :: Options term -> term -> Doc (Ann term)
+
+  ppr :: term -> Doc (Ann term)
+  ppr = ppr' (initOptions @term)
 
   -- | Patch a given expression, given a navigation context to a sub-expression
   -- and a new sub-expression to replace it.

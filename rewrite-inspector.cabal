@@ -27,6 +27,7 @@ library
     hs-source-dirs:   src
     exposed-modules:  RewriteInspector
                       Gen
+                      Precompute
                       Types
                       Pretty
                       BrickUI
@@ -40,7 +41,8 @@ library
                       text,
                       microlens     >= 0.3.0.0,
                       microlens-th,
-                      data-default  >= 0.7.1.1
+                      vector        >= 0.12,
+                      data-clist    >= 0.1
 
     ghc-options:        -Wall
     default-language:   Haskell2010
@@ -77,6 +79,19 @@ executable str-example
     main-is:          Main.hs
     build-depends:    base >=4.7 && <5,
                       prettyprinter >= 1.2.0.1  && < 2.0,
+                      rewrite-inspector -any
+
+    ghc-options:      -threaded
+    extra-libraries:  pthread
+    default-language: Haskell2010
+
+executable clash-example
+    hs-source-dirs:   examples/clash
+    main-is:          Main.hs
+    build-depends:    base >= 4.3.1.0  && <5,
+                      prettyprinter >= 1.2.0.1  && < 2.0,
+                      binary        >= 0.8.5    && < 0.11,
+                      clash-lib     >= 0.7.1    && < 1.0,
                       rewrite-inspector -any
 
     ghc-options:      -threaded

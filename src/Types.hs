@@ -9,25 +9,24 @@
 
 module Types where
 
-import Data.Char  (toLower)
-import Data.List  (delete, elemIndex, find, isInfixOf, groupBy, nub, sortOn)
-import Data.Maybe (fromJust)
-import Data.Map   ((!), Map, insert, fromList)
-import Text.Read  (readMaybe)
-import Data.Text  (pack, unpack)
+import System.IO.Unsafe (unsafePerformIO)
 
-import Lens.Micro    ((^.), (&), (.~), (%~), Lens', lens)
+import Data.Binary (decodeFile)
+import Data.Char   (toLower)
+import Text.Read   (readMaybe)
+import Data.Text   (pack, unpack)
+import qualified Data.Vector as V
+
+import Lens.Micro    ((^.), (&), (.~), (%~), ix, Lens', lens)
 import Lens.Micro.TH (makeLenses)
 
 import Brick       ((<+>), str, txt, CursorLocation)
 import Brick.Forms ((@@=), checkboxField, editField, formState, newForm, Form)
 
 import Gen
+import Precompute
 
 -- * Basic types.
-
--- | Program binders (i.e. top-level identifiers) are identified by their name.
-type Binder = String
 
 -- | Our @Brick@ TUI does not use any custom events.
 data NoCustomEvent
@@ -65,16 +64,30 @@ data OptionsUI term = OptionsUI
   }
 makeLenses ''OptionsUI
 
--- | Bottom-level state of the UI (navigate steps of a top-level binder).
-data VizState term = VizState
-  { _steps     :: History term (Ctx term)
-  -- ^ steps of the rewriting process
-  , _prevState :: Maybe (VizState term)
-  -- ^ previous state (initially Nothing)
-  , _curExpr   :: term
-  -- ^ current (intermediate) expression
-  , _curStep   :: Int
-  -- ^ current step in given top-level entity
+data UIState term = UIState
+  { _curBinder :: Int
+  -- ^ current binder
+  , _curSteps  :: [Int]
+  -- ^ current step for each binder
+
+  -- * Options
+
+  , _form      :: Form (OptionsUI term) NoCustomEvent Name
+  -- ^ input form for setting parameters
+  , _showBot   :: Bool
+  -- ^ whether to hide bottom pane
+  , _scroll    :: Bool
+  -- ^ whether to scroll to focused region
+
+  -- * Terminal attributes
+
+  , _width     :: Int
+  -- ^ current terminal width
+  , _height    :: Int
+  -- ^ current terminal height
+
+  -- * Text search
+
   , _curOccur  :: Int
   -- ^ current occurrence we are highlighting
   , _leftN     :: Int
@@ -82,35 +95,18 @@ data VizState term = VizState
   , _rightN    :: Int
   -- ^ # of occurrences in the right viewport
   }
-makeLenses ''VizState
+makeLenses ''UIState
 
--- | Top-level state of the UI (navigate top-level binders).
-data VizStates term = VizStates
-  { _binders   :: [Binder]
-  -- ^ all top-level binders
-  , _curBinder :: Binder
-  -- ^ currently selected binder
-  , _states    :: Map Binder (VizState term)
-  -- ^ state of each binder
-  , _form      :: Form (OptionsUI term) NoCustomEvent Name
-  -- ^ input form for setting parameters
-  , _showBot   :: Bool
-  -- ^ whether to hide bottom pane
-  , _width     :: Int
-  -- ^ current terminal width
-  , _height    :: Int
-  -- ^ current terminal height
-  , _scroll    :: Bool
-  -- ^ whether to scroll to focused region
-  }
-makeLenses ''VizStates
-
--- * Getters and setters.
+getCurrentStep
+  :: forall term. Diff term
+  => UIState term -> Int
+getCurrentStep st = (st^.curSteps) !! (st^.curBinder)
 
 -- | Create the input form.
-mkForm :: forall term. Diff term
-       => OptionsUI term
-       -> Form (OptionsUI term) NoCustomEvent Name
+mkForm
+  :: forall term. Diff term
+  => OptionsUI term
+  -> Form (OptionsUI term) NoCustomEvent Name
 mkForm = newForm $
   map (\(f, g, s) -> checkboxField (opts . lens f g) (FormField s) (pack s))
       (flagFields @term)
@@ -130,114 +126,93 @@ mkForm = newForm $
               | '%':'t':' ':s <- x                 = Just $ Trans s
               | otherwise                          = Nothing
 
+-- | Precomputed states.
+precomputed :: Diff term => PrecomputedState (Ann term) (Ctx term)
+precomputed = unsafePerformIO $ decodeFile "history'.dat"
+
+states :: forall term. Diff term => StatesV (Ann term) (Ctx term)
+states = fst (precomputed @term)
+
+allBinders :: forall term. Diff term => [Binder]
+allBinders = snd (precomputed @term)
+
+getDiffScreen
+  :: forall term. Diff term
+  => UIState term
+  -> DiffScreen (Ann term) (Ctx term)
+getDiffScreen st
+  = (!!!) @term (precomputed @term)
+                (st^.curBinder, getCurrentStep st, st^.formData.opts, st^.width)
+
 -- | Group the rewrite history by the different top-level binders.
-createVizStates :: forall term. Diff term
-                => History term (Ctx term)
-                -> VizStates term
-createVizStates hist = VizStates
-  { _binders    = top : (delete top $ nub bndrs)
-  , _curBinder  = top
-  , _states     = fromList
-                $ map (\h -> (head h ^. bndrS, initialState h))
-                $ groupBy (\ x y -> x^.bndrS == y^.bndrS)
-                $ sortOn _bndrS hist
-  , _form       = mkForm @term (OptionsUI { _opts = initOptions @term
-                                          , _com  = Step 1 })
-  , _showBot    = False
-  , _width      = 0
-  , _height     = 0
-  , _scroll     = True
+initialState :: forall term. Diff term => UIState term
+initialState = UIState
+  { _curBinder = 0
+  , _curSteps  = replicate (length $ allBinders @term) 0
+  , _form      = mkForm @term (OptionsUI { _opts = initOptions @term
+                                         , _com  = Step 1 })
+  , _showBot   = False
+  , _scroll    = True
+  , _width     = 0
+  , _height    = 0
+  , _curOccur  = 0
+  , _leftN     = 0
+  , _rightN    = 0
   }
-  where bndrs = _bndrS <$> hist
-        top   = fromJust $ find (topEntity @term `isInfixOf`) bndrs
-
--- | State initialization for the bottom layer.
-initialState :: Diff term => History term (Ctx term) -> VizState term
-initialState hist = VizState { _steps      = hist
-                             , _prevState  = Nothing
-                             , _curExpr    = initialExpr hist
-                             , _curStep    = 1
-                             , _curOccur   = 0
-                             , _leftN      = 0
-                             , _rightN     = 0 }
-
--- | Get the name of the current transformation.
-currentStepName :: VizState term -> String
-currentStepName v =
-  case v^.steps of
-    []     -> "THE END"
-    (st:_) -> st^.name
-
--- | Get information about the current step.
-getStep :: VizStates term
-        -> Binder
-        -> (Int {-current-}, Int {-total-}, String {-transformation-})
-getStep vs bndr = (cur, cur + length (v^.steps), currentStepName v)
-  where v   = (vs^.states) ! bndr
-        cur = v^.curStep
-
--- | Get the current state of the bottom layer.
-getCurrentState :: VizStates term -> VizState term
-getCurrentState vs = (vs^.states) ! (vs^.curBinder)
 
 -- | Get the current string we are searching for.
 -- NB: Returns the empty string of no search command has been issued.
-getSearchString :: Diff term => VizStates term -> String
+getSearchString :: Diff term => UIState term -> String
 getSearchString vs = case vs^.formData.com of { Search s -> s; _ -> "" }
 
--- | Lens from the /global/ state to the input form's data.
-formData :: forall term
-          . Diff term
-         => Lens' (VizStates term) (OptionsUI term)
+-- | Lens into the input form's data.
+formData
+  :: forall term. Diff term
+  => Lens' (UIState term) (OptionsUI term)
 formData f vs = (\fm' -> vs {_form = mkForm @term fm'}) <$> f (formState $ _form vs)
 
--- | Update the /local/ state of the current binder.
-updateState :: VizStates term -> VizState term -> VizStates term
-updateState vs v = vs & states .~ insert (vs^.curBinder) v (vs^.states)
-
 -- | Get the available code width for one of the two code panes.
-getCodeWidth :: VizStates term -> Int
+getCodeWidth :: UIState term -> Int
 getCodeWidth vs = vs^.width `div` 2
 
--- | Cycle through top-level binders in the /global/ state.
+maxBinder :: forall term. Diff term => Int
+maxBinder = V.length (states @term) - 1
+
+maxStep :: forall term. Diff term => UIState term -> Int
+maxStep vs = V.length (states @term V.! (vs^.curBinder)) - 1
+
+-- | Cycle through top-level binders.
 --
 --   [@stepBinder@] Proceed forward.
 --
 --   [@unstepBinder@] Proceed backward.
-stepBinder, unstepBinder :: VizStates term -> VizStates term
-stepBinder vs = vs & curBinder .~ findNext (vs^.curBinder) (vs^.binders)
-  where findNext :: Eq a => a -> [a] -> a
-        findNext x xs
-          | Just i <- x `elemIndex` xs, i < (length xs - 1) = xs !! (i + 1)
-          | otherwise                                       = x
-unstepBinder vs = vs & curBinder .~ findPrev (vs^.curBinder) (vs^.binders)
-  where findPrev :: Eq a => a -> [a] -> a
-        findPrev x xs
-          | Just i <- x `elemIndex` xs, i > 0 = xs !! (i - 1)
-          | otherwise                         = x
+stepBinder, unstepBinder
+  :: forall term. Diff term
+  => UIState term -> UIState term
+stepBinder vs = vs & curBinder %~ incr
+  where incr i | i == maxBinder @term = 0
+               | otherwise            = i + 1
+unstepBinder vs = vs & curBinder %~ decr
+  where decr i | i == 0    = maxBinder @term
+               | otherwise = i - 1
 
--- | Cycle through transformations of the current binder in the /local/ state.
+-- | Cycle through transformations of the current binder.
 --
 --   [@step@] Proceed forward.
 --
 --   [@unstep@] Proceed backward.
 --
 --   [@reset@] Reset to the initial state.
-step, unstep, reset :: Diff term => VizState term -> VizState term
-step prev@(VizState []     _ _    _    _ _ _) = prev
-step prev@(VizState (t:ts) _ curE curS _ _ _) =
-  VizState { _steps     = ts
-           , _prevState = Just prev
-           , _curExpr   = patch curE (t^.ctx) (t^.after)
-           , _curStep   = curS + 1
-           , _curOccur  = 0
-           , _leftN     = 0
-           , _rightN    = 0 }
-unstep st = case st^.prevState of
-  Nothing   -> st
-  Just prev -> prev
-reset first@(VizState _ Nothing _ _ _ _ _) = first
-reset (VizState _ (Just prev) _ _ _ _ _)   = reset prev
+step, unstep, reset
+  :: forall term. Diff term
+  => UIState term -> UIState term
+step vs = vs & curSteps . ix (vs^.curBinder) %~ incr
+  where incr n | n == maxStep vs = n
+               | otherwise       = n + 1
+unstep vs = vs & curSteps . ix (vs^.curBinder) %~ decr
+  where decr n | n == 0    = n
+               | otherwise = n - 1
+reset vs = vs & curSteps . ix (vs^.curBinder) .~ 0
 
 -- * User-issued commands.
 
@@ -245,31 +220,24 @@ reset (VizState _ (Just prev) _ _ _ _ _)   = reset prev
 data Direction = Forward | Backward
 
 -- | Move to a specified step of the transformations of the current binder.
-moveTo :: Diff term => Int -> VizState term -> VizState term
-moveTo n v = if (v^.curStep) == (v'^.curStep) then v else moveTo n v'
-  where v' = case n `compare` (v^.curStep) of { EQ -> v
-                                              ; LT -> unstep v
-                                              ; GT -> step v }
+moveTo
+  :: forall term. Diff term
+  => Int -> UIState term -> UIState term
+moveTo n vs = vs & curSteps . ix (vs^.curBinder) .~ n'
+  where n' | n < 0          = 0
+           | n > maxStep vs = maxStep vs
+           | otherwise      = n
 
 -- | Move to the next/previous step with the given transformation name.
-nextTrans :: Diff term => Direction -> String -> VizState term -> VizState term
-nextTrans dir (map toLower -> s) v0 = go (next v0)
-  where
-    next = case dir of { Forward -> step ; Backward -> unstep }
-    startStep = v0^.curStep
-    go v -- not found, abort
-         | v^.curStep == startStep = v
-         -- end of steps, reset
-         | [] <- v^.steps = go (reset v)
-         -- found, return
-         | (st:_) <- v^.steps
-         , s `isInfixOf` (toLower <$> st^.name) = v
-         -- continue searching..
-         | otherwise = go (next v)
+nextTrans
+  :: forall term. Diff term
+  => Direction -> String
+  -> UIState term -> UIState term
+nextTrans dir (map toLower -> s) v0 = undefined
 
 -- | Cycle through search occurrences.
-nextOccur :: Diff term => Direction -> VizState term -> VizState term
-nextOccur Forward  v = v & curOccur %~ (+ 1)
-nextOccur Backward v = v & curOccur %~ back
-  where back 0 = max 0 (v^.leftN + v^.rightN - 1)
-        back i = i - 1
+nextOccur
+  :: forall term. Diff term
+  => Direction
+  -> UIState term -> UIState term
+nextOccur dir v = undefined

@@ -19,9 +19,12 @@ import Control.Monad          (void, (>>))
 import Control.Monad.Fail     (MonadFail (..))
 import Control.Monad.IO.Class (liftIO)
 
-import Data.Either         (fromRight)
-import Data.List           (sortOn)
-import Data.Maybe          (listToMaybe, catMaybes)
+import Data.Binary (encodeFile)
+import Data.Either (fromRight)
+import Data.List   (sortOn)
+import Data.Maybe  (listToMaybe, catMaybes)
+import qualified Data.Vector as Vec
+
 import Lens.Micro
 
 import Brick
@@ -40,28 +43,29 @@ import qualified Brick.Widgets.Center as C
 import qualified Graphics.Vty         as V
 
 import Gen
+import Precompute
 import Types
 import Pretty
 
 -- | Entry point for the TUI.
-runTerminal :: forall term. Diff term => FilePath -> IO ()
-runTerminal ftheme = do
-  let dtheme = defaultTheme (userStyles @term)
-  theme <- fromRight dtheme <$> loadCustomizations ftheme dtheme
+runMain :: forall term. Diff term => FilePath -> IO ()
+runMain ftheme = do
   args <- getArgs
   case args of
-    [fname] -> do
+    ["-p", fname] -> do
       hist <- readHistory @term fname
-      void $ B.customMain
-        -- Vty configuration
-        (V.mkVty $ V.defaultConfig { V.vtime = Just 100, V.vmin  = Just 1 })
-        Nothing                             -- event channel
-        (app @term (themeToAttrMap theme))  -- the Brick application
-        (createVizStates @term hist)        -- initial state
-    _ -> error "Usage: clash-term <history_file>"
+      let hist' = precompute hist
+      encodeFile "history'.dat" hist'
+    ["-m"] -> do
+      let dtheme = defaultTheme (userStyles @term)
+      theme <- fromRight dtheme <$> loadCustomizations ftheme dtheme
+      void $ B.defaultMain (app @term (themeToAttrMap theme)) initialState
+    _ -> error " Usage: clash-term -p <history_file>, and then \
+               \        clash-term -m"
+
 
 -- | The 'Brick.App' configuration.
-app :: Diff term => B.AttrMap -> App (VizStates term) NoCustomEvent Name
+app :: Diff term => B.AttrMap -> App (UIState term) NoCustomEvent Name
 app attrMap = App
   { appDraw         = drawUI
   , appChooseCursor = chooseCursor
@@ -71,7 +75,7 @@ app attrMap = App
   }
 
 -- | Choose a single cursor to display, out of possibly many requests.
-chooseCursor :: VizStates term -> [Cursor] -> Maybe Cursor
+chooseCursor :: UIState term -> [Cursor] -> Maybe Cursor
 chooseCursor st ls
   =  (listToMaybe $ filter isSearch ls)
  <|> (focusRingCursor (Bf.formFocus . _form) st ls)
@@ -84,8 +88,7 @@ chooseCursor st ls
 -- * Display.
 
 -- Draw all top-level binders and their current step.
-drawUI :: forall term. Diff term
-       => VizStates term -> [Widget Name]
+drawUI :: forall term. Diff term => UIState term -> [Widget Name]
 drawUI vs =
   [ B.translateBy (B.Location controlsOffset) controls
   | vs^.showBot
@@ -94,7 +97,7 @@ drawUI vs =
   [ vBox
       [ B.vLimitPercent 20 $
           C.hCenter $
-            hBoxSpaced 2 (drawBndr <$> vs^.binders)
+            hBoxSpaced 2 (drawBndr <$> zip [0..] (allBinders @term))
       , diff
       , B.vLimitPercent 10 $
           hBox
@@ -104,45 +107,39 @@ drawUI vs =
       ]
   ]
   where
-    -- display the top-level binders
-    drawBndr :: Binder -> Widget Name
-    drawBndr bndr
-      = wb (show curN ++ "/" ++ show totN ++ " (" ++ stepName ++ ")")
+    ds :: DiffScreen (Ann term) (Ctx term)
+    ds = getDiffScreen vs
+
+    -- * display the top-level binders
+    drawBndr :: (Int, Binder) -> Widget Name
+    drawBndr (i, bndr)
+      = wb (  show (getCurrentStep vs)
+           ++ "/" ++ show totN
+           ++ " (" ++ (ds^.name') ++ ")"
+           )
       $ str (fillSize 50 bndr)
       where
-        (curN, totN, stepName) = getStep vs bndr
-        wb | bndr == vs^.curBinder = withBorderSelected
+        totN = length (states @term Vec.! i)
+        wb | i == vs^.curBinder = withBorderSelected
            | otherwise             = withBorder
 
-    -- display the diff of this rewrite step
+    -- * display the diff of this rewrite step
     diff :: Widget Name
-    diff
-      | v@(VizState (st:_) _ curE _ curO _ _) <- getCurrentState vs
-      = let
-          showE = showCode (vs^.scroll)
-                           (min 80 $ getCodeWidth vs)
-                           (vs^.formData^.opts)
-                           (st^.ctx)
-                           (getSearchString vs)
-          nextE = step v ^. curExpr
-          (visL, visR) | v^.curOccur < v^.leftN
-                       = (visibleCursors curO, invisibleCursors)
-                       | otherwise
-                       = (invisibleCursors, visibleCursors (curO - v^.leftN))
-        in
-          hBoxSpaced 2
-            [ B.viewport LeftViewport B.Both $
-                visL $
-                  withBorder "Before" $ showE curE
-            , B.viewport RightViewport B.Both $
-                visR $
-                  withBorder "After" $ showE nextE
-            ]
+    diff =
+      hBoxSpaced 2
+        [ B.viewport LeftViewport B.Both $
+            vL $ withBorder "Before" $ showE (ds^.before')
+        , B.viewport RightViewport B.Both $
+            vR $ withBorder "After" $ showE (ds^.after')
+        ]
+      where
+        showE = showCode @term (vs^.scroll) (ds^.ctx') (getSearchString vs)
+        curO  = vs^.curOccur
+        ln    = vs^.leftN
+        (vL, vR) | curO < ln = (visibleCursors curO, invisibleCursors)
+                 | otherwise = (invisibleCursors, visibleCursors (curO - ln))
 
-      | otherwise
-      = C.center $ title "THE END"
-
-    -- display the (editable) input form
+    -- * display the (editable) input form
     inputForm :: Widget Name
     inputForm = withBorder "Input"
               $ Bf.renderForm
@@ -152,15 +149,13 @@ drawUI vs =
     searchMatches :: Widget Name
     searchMatches = C.vCenter $ str (n ++ " out of " ++ tot ++ " matches")
       where
-        (n, tot)
-          | v@(VizState (_:_) _ _ _ _ _ _) <- getCurrentState vs
-          , let lr = v^.leftN + v^.rightN
-          , lr > 0
-          = (show (v^.curOccur + 1), show lr)
-          | otherwise
-          = ("-", "-")
+        (n, tot) | let lr = vs^.leftN + vs^.rightN
+                 , lr > 0
+                 = (show (vs^.curOccur + 1), show lr)
+                 | otherwise
+                 = ("-", "-")
 
-    -- display the keyboard controls
+    -- * display the keyboard controls
     controlsOffset :: (Int, Int)
     controlsOffset = ( (vs^.width `div` 2) - 25
                      , (vs^.height `div` 2) - 15
@@ -193,31 +188,31 @@ instance MonadFail (EventM Name) where
   fail = liftIO . fail
 
 -- | Lookup terminal size and store in the current state.
-lookupSize :: EventM Name (VizStates term -> VizStates term)
+lookupSize :: EventM Name (UIState term -> UIState term)
 lookupSize = do
   out    <- V.outputIface <$> B.getVtyHandle
   (w, h) <- V.displayBounds out
   return $ (width .~ w) . (height .~ h)
 
 -- | Update number of occurrences of searched string in both viewports.
-updateOcc :: Diff term => VizStates term -> VizStates term
+updateOcc :: forall term. Diff term => UIState term -> UIState term
 updateOcc vs
-  | v@(VizState (_:_) _ curE _ _ _ _) <- getCurrentState vs
-  , let ln = countOcc (vs^.formData^.opts) (getSearchString vs) curE
-        rn = countOcc (vs^.formData^.opts) (getSearchString vs) (step v ^. curExpr)
+  | let ds = getDiffScreen @term vs
+        ln = countOcc @term (getSearchString vs) (ds^.before')
+        rn = countOcc @term (getSearchString vs) (ds^.after')
   , ln + rn > 0
-  = updateState vs $ v & leftN    .~ ln
-                       & rightN   .~ rn
-                       & curOccur .~ ((v^.curOccur) `mod` (ln + rn))
+  = vs & leftN    .~ ln
+       & rightN   .~ rn
+       & curOccur .~ ((vs^.curOccur) `mod` (ln + rn))
 
   | otherwise
   = vs
 
 -- | Lookup code sizes and store them in the current state, then handle events.
 handleStart :: forall term. Diff term
-            => VizStates term
+            => UIState term
             -> BrickEvent Name NoCustomEvent
-            -> EventM Name (Next (VizStates term))
+            -> EventM Name (Next (UIState term))
 handleStart vs ev = do
   pre <- lookupSize
   vs' <- handleEvent (pre vs) ev
@@ -225,10 +220,11 @@ handleStart vs ev = do
   return (updateOcc . post <$> vs')
 
 -- | Handle keyboard events.
-handleEvent :: Diff term
-            => VizStates term
-            -> BrickEvent Name NoCustomEvent
-            -> EventM Name (Next (VizStates term))
+handleEvent
+  :: forall term. Diff term
+  => UIState term
+  -> BrickEvent Name NoCustomEvent
+  -> EventM Name (Next (UIState term))
 handleEvent vs ev@(VtyEvent (V.EvKey key mods))
 
   -- some controls are disabled when the user is writing in the input form
@@ -260,7 +256,7 @@ handleEvent vs ev@(VtyEvent (V.EvKey key mods))
   where
     contT      = continue . (scroll .~ True)
     contF      = (>> continue (vs & scroll .~ False))
-    bottom fg  = continue $ updateState vs (fg $ getCurrentState vs)
+    bottom fg  = continue $ fg vs
                           & scroll .~ True
     action dir  = case vs^.formData.com of
       Step n   -> bottom $ moveTo n
@@ -316,7 +312,7 @@ handleEvent vs ev@(VtyEvent (V.EvKey key mods))
     formHandler = do
       fm' <- Bf.handleFormEvent ev (vs^.form)
       let cm          = (Bf.formState fm')^.com
-          (_, tot, _) = getStep vs (vs^.curBinder)
+          tot         = length $ states @term Vec.! (vs^.curBinder)
           valid       = case cm of Step n  -> n > 0 && n <= tot
                                    _       -> True
       continue $ vs & form .~ Bf.setFieldValid valid (FormField "Command") fm'
