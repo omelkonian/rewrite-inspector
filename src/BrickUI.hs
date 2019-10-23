@@ -15,7 +15,7 @@ import Prelude hiding (fail)
 
 import System.Environment     (getArgs)
 import Control.Applicative    ((<|>))
-import Control.Monad          (void, (>>))
+import Control.Monad          (void)
 import Control.Monad.Fail     (MonadFail (..))
 import Control.Monad.IO.Class (liftIO)
 
