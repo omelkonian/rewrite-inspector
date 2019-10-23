@@ -196,7 +196,7 @@ instance MonadFail (EventM Name) where
 lookupSize :: EventM Name (VizStates term -> VizStates term)
 lookupSize = do
   out    <- V.outputIface <$> B.getVtyHandle
-  (w, h) <- V.displayBounds out
+  (w, h) <- liftIO (V.displayBounds out)
   return $ (width .~ w) . (height .~ h)
 
 -- | Update number of occurrences of searched string in both viewports.
