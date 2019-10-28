@@ -1,13 +1,4 @@
-packages:
-  ./rewrite-inspector.cabal
-
-allow-newer: *:Cabal, *:array, *:base, *:binary, *:^bytestring, *:containers,
-  *:deepseq, *:directory, *:filepath, *:ghc, *:ghc-boot, *:ghc-boot-th,
-  *:ghc-compact, *:ghc-heap, *:ghc-prim, *:ghci, *:haskeline, *:hpc,
-  *:integer-gmp, *:libiserv, *:mtl, *:parsec, *:pretty, *:process, *:stm,
-  *:template-haskell, *:terminfo, *:text, *:time, *:transformers, *:unix,
-  *:xhtml, *:ghc-tcplugins-extra, *:ghc-typelits-natnormalise,
-  *:ghc-typelits-knownnat, *:ghc-typelits-extra
+allow-newer: transformers
 
 repository head.hackage
   url: http://head.hackage.haskell.org/
@@ -17,7 +8,7 @@ repository head.hackage
              8f79fd2389ab2967354407ec852cbe73f2e8635793ac446d09461ffb99527f6e
   key-threshold: 3
 
-index-state: 2019-10-23T05:10:28Z
+index-state: 2019-10-26T15:47:00Z
 
 -- Build documentation for all dependencies so we can upload docs to hackage
 -- with proper links

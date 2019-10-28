@@ -52,10 +52,7 @@ runTerminal ftheme = do
   case args of
     [fname] -> do
       hist <- readHistory @term fname
-      void $ B.customMain
-        -- Vty configuration
-        (V.mkVty $ V.defaultConfig { V.vtime = Just 100, V.vmin  = Just 1 })
-        Nothing                             -- event channel
+      void $ B.defaultMain
         (app @term (themeToAttrMap theme))  -- the Brick application
         (createVizStates @term hist)        -- initial state
     _ -> error "Usage: clash-term <history_file>"
